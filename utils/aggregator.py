@@ -1,5 +1,3 @@
-import calendar
-
 from datetime import datetime, timedelta
 
 from db.mongo_manager import AsyncMongoManager
@@ -13,6 +11,7 @@ class SalaryAggregator(Validators, AsyncMongoManager):
 
     def __init__(self, request: str) -> None:
         super().__init__(config=mongo_config)
+        # validate user input
         super().validate_request(request)
         self.request = eval(request)
         self.group_type = self.request.get('group_type')
@@ -20,6 +19,7 @@ class SalaryAggregator(Validators, AsyncMongoManager):
         self.dt_upto = datetime.fromisoformat(self.request['dt_upto'])
 
     def get_group_filter(self) -> dict:
+        # checkout the group type and set equal filter
         date_parts = {
             "year": {"$year": "$dt"},
             "month": {"$month": "$dt"},
@@ -40,7 +40,6 @@ class SalaryAggregator(Validators, AsyncMongoManager):
         return group_filter
 
     async def fetch_data(self) -> list:
-
         pipeline = [
             {"$match": {"dt": {"$gte": self.dt_from, "$lte": self.dt_upto}}},
             self.get_group_filter(),
@@ -49,6 +48,10 @@ class SalaryAggregator(Validators, AsyncMongoManager):
         return await super().aggregate(pipeline)
 
     def get_labels(self) -> list:
+        # Get labels for 'day' and 'hour' group cases.
+        # It is assumed that there will be at least one payment per month
+        # For other cases, a template is created that consists
+        # of continuous intervals
         match self.group_type:
             case g if g == 'day':
                 return [self.dt_from + timedelta(days=i)
@@ -60,17 +63,19 @@ class SalaryAggregator(Validators, AsyncMongoManager):
 
     @staticmethod
     def set_iso(labels: list) -> list:
+        # convert time format to ISO
         return list(map(lambda x: x.isoformat(), labels))
 
     async def get_response(self) -> dict:
+        # Get data from db by prepared pipeline
         data: list = await self.fetch_data()
+        # Get interval template
         labels: list | None = self.get_labels()
+        # If there is no template, assume that this is a grouping by month
         if not labels:
+            # So we equate the labels with the data received from the database
             labels = [date['_id'] for date in data]
-        diff: int = len(labels) - len(data)
-        sum_list: list = [i['total_value'] for i in data]
-        if diff > 0:
-            dataset = [0] * diff + sum_list
-        else:
-            dataset = sum_list
+        data_dates = {date['_id']: date['total_value'] for date in data}
+        # Generate dataset with zeros for days without payments
+        dataset = [data_dates.get(label, 0) for label in labels]
         return {'dataset': dataset, 'labels': self.set_iso(labels)}
